@@ -2,13 +2,20 @@ import time
 from absl import app, flags, logging
 from absl.flags import FLAGS
 import cv2
+import os, sys
 import numpy as np
 import tensorflow as tf
-from yolov3_tf2.models import (
+
+""" Syspath needs to include parent directory "pollen detection"  to find sibling 
+modules and database."""
+file_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__))) + "/"
+sys.path.append(file_path)
+
+from yolov3.yolov3_tf2.models import (
     YoloV3, YoloV3Tiny
 )
-from yolov3_tf2.dataset import transform_images, load_tfrecord_dataset
-from yolov3_tf2.utils import draw_outputs
+from yolov3.yolov3_tf2.dataset import transform_images, load_tfrecord_dataset
+from yolov3.yolov3_tf2.utils import draw_outputs
 
 flags.DEFINE_string('classes', './data/coco.names', 'path to classes file')
 flags.DEFINE_string('weights', './checkpoints/yolov3.tf',

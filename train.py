@@ -3,20 +3,25 @@ from absl.flags import FLAGS
 
 import tensorflow as tf
 import numpy as np
-import cv2
+import os, sys
 from tensorflow.keras.callbacks import (
     ReduceLROnPlateau,
     EarlyStopping,
     ModelCheckpoint,
     TensorBoard
 )
-from yolov3_tf2.models import (
+
+""" Syspath needs to include parent directory "pollen detection"  to find sibling 
+modules and database."""
+file_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__))) + "/"
+sys.path.append(file_path)
+from yolov3.yolov3_tf2.models import (
     YoloV3, YoloV3Tiny, YoloLoss,
     yolo_anchors, yolo_anchor_masks,
     yolo_tiny_anchors, yolo_tiny_anchor_masks
 )
-from yolov3_tf2.utils import freeze_all
-import yolov3_tf2.dataset as dataset
+from yolov3.yolov3_tf2.utils import freeze_all
+import yolov3.yolov3_tf2.dataset as dataset
 
 flags.DEFINE_string('dataset', '', 'path to dataset')
 flags.DEFINE_string('val_dataset', '', 'path to validation dataset')
