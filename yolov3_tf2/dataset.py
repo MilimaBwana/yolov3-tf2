@@ -1,7 +1,5 @@
 import tensorflow as tf
-from yolov3.yolov3_tf2.models import (
-    yolo_max_boxes
-)
+
 
 @tf.function
 def transform_targets_for_output(y_true, grid_size, anchor_idxs):
@@ -73,9 +71,11 @@ def transform_targets(y_train, anchors, anchor_masks, size):
 
 
 def transform_images(x_train, size):
-    x_train = tf.image.resize(x_train, (size, size))
-    x_train = x_train / 255
-    return x_train
+    img = x_train[0]
+    filename = x_train[1]
+    img = tf.image.resize(img, (size, size))
+    img = img / 255
+    return img, filename
 
 
 # https://github.com/tensorflow/models/blob/master/research/object_detection/g3doc/using_your_own_dataset.md#conversion-script-outline-conversion-script-outline
@@ -83,7 +83,7 @@ def transform_images(x_train, size):
 IMAGE_FEATURE_MAP = {
     # 'image/width': tf.io.FixedLenFeature([], tf.int64),
     # 'image/height': tf.io.FixedLenFeature([], tf.int64),
-    # 'image/filename': tf.io.FixedLenFeature([], tf.string),
+    'image/filename': tf.io.FixedLenFeature([], tf.string),
     # 'image/source_id': tf.io.FixedLenFeature([], tf.string),
     # 'image/key/sha256': tf.io.FixedLenFeature([], tf.string),
     'image/encoded': tf.io.FixedLenFeature([], tf.string),
@@ -100,10 +100,13 @@ IMAGE_FEATURE_MAP = {
 }
 
 
-def parse_tfrecord(tfrecord, class_table, size):
+def __parse_example(tfrecord, class_table, size, max_boxes):
     x = tf.io.parse_single_example(tfrecord, IMAGE_FEATURE_MAP)
     x_train = tf.image.decode_jpeg(x['image/encoded'], channels=3)
     x_train = tf.image.resize(x_train, (size, size))
+    filename = tf.cast(x['image/filename'],  tf.string)
+    #TODO: Augmentation
+    x_train = (x_train, filename)
 
     class_text = tf.sparse.to_dense(
         x['image/object/class/text'], default_value='')
@@ -114,20 +117,61 @@ def parse_tfrecord(tfrecord, class_table, size):
                         tf.sparse.to_dense(x['image/object/bbox/ymax']),
                         labels], axis=1)
 
-    paddings = [[0, yolo_max_boxes - tf.shape(y_train)[0]], [0, 0]]
+    paddings = [[0, max_boxes - tf.shape(y_train)[0]], [0, 0]]
     y_train = tf.pad(y_train, paddings)
 
     return x_train, y_train
 
 
-def load_tfrecord_dataset(file_pattern, class_file, size=416):
+def load_tfrecord_dataset(file_pattern, class_file, size=416, max_boxes=100):
     LINE_NUMBER = -1  # TODO: use tf.lookup.TextFileIndex.LINE_NUMBER
     class_table = tf.lookup.StaticHashTable(tf.lookup.TextFileInitializer(
         class_file, tf.string, 0, tf.int64, LINE_NUMBER, delimiter="\n"), -1)
 
     files = tf.data.Dataset.list_files(file_pattern)
     dataset = files.flat_map(tf.data.TFRecordDataset)
-    return dataset.map(lambda x: parse_tfrecord(x, class_table, size))
+    # Tests
+    #for x in dataset:
+    #    __parse_example(x, class_table, size, max_boxes)
+    return dataset.map(lambda x: __parse_example(x, class_table, size, max_boxes))
+
+
+def load_tf_record(mode, params, anchors, anchor_masks):
+
+    if mode == tf.estimator.ModeKeys.TRAIN:
+        train_dataset = load_tfrecord_dataset(
+            params['dataset'].tf_record_train, params['dataset'].name_classes, params['img_size'], params['max_boxes'])
+        train_dataset = train_dataset.shuffle(buffer_size=512)
+        train_dataset = train_dataset.batch(params['batch_size'])
+        # Tests
+        #for x, y in train_dataset:
+        #    transform_images(x, params['img_size'])
+        #    transform_targets(y, anchors, anchor_masks, params['img_size'])
+        train_dataset = train_dataset.map(lambda x, y: (
+            transform_images(x, params['img_size']),
+            transform_targets(y, anchors, anchor_masks,  params['img_size'])))
+        train_dataset = train_dataset.prefetch(
+            buffer_size=tf.data.experimental.AUTOTUNE)
+        return train_dataset
+
+    elif mode == tf.estimator.ModeKeys.EVAL:
+        val_dataset = load_tfrecord_dataset(
+            params['dataset'].tf_record_val, params['dataset'].name_classes,  params['img_size'], params['max_boxes'])
+        val_dataset = val_dataset.batch(params['batch_size'])
+        val_dataset = val_dataset.map(lambda x, y: (
+            transform_images(x,  params['img_size']),
+            transform_targets(y, anchors, anchor_masks,  params['img_size']),
+            y))
+        return val_dataset
+    elif mode == tf.estimator.ModeKeys.PREDICT:
+        test_dataset = load_tfrecord_dataset(
+            params['dataset'].tf_record_test, params['dataset'].name_classes, params['img_size'], params['max_boxes'])
+        test_dataset = test_dataset.shuffle(512)
+        test_dataset = test_dataset.map(lambda x, y: (
+            transform_images(x, params['img_size']), y))
+        return test_dataset
+    else:
+        raise ValueError('No valid mode.')
 
 
 def load_fake_dataset():

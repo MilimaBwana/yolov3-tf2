@@ -20,9 +20,9 @@ from tensorflow.keras.losses import (
 )
 from .utils import broadcast_iou
 
-yolo_max_boxes = 100
+yolo_max_boxes = 40 # must be > than max number of detection in one image
 yolo_iou_threshold = 0.5
-yolo_score_threshold = 0.5
+yolo_score_threshold = 0.05
 
 
 yolo_anchors = np.array([(10, 13), (16, 30), (33, 23), (30, 61), (62, 45),
@@ -173,6 +173,7 @@ def yolo_boxes(pred, anchors, classes):
 
 
 def yolo_nms(outputs, anchors, masks, classes):
+    """ Non-maximum suppression of overlapping boxes."""
     # boxes, conf, type(class)
     b, c, t = [], [], []
 
@@ -182,9 +183,9 @@ def yolo_nms(outputs, anchors, masks, classes):
         t.append(tf.reshape(o[2], (tf.shape(o[2])[0], -1, tf.shape(o[2])[-1])))
 
 
-    bbox = tf.concat(b, axis=1) # shape (batch_size. 10647, 4)
-    confidence = tf.concat(c, axis=1) # shape (batch_size. 10647, 1)
-    class_probs = tf.concat(t, axis=1) # shape (batch_size. 10647, classes)
+    bbox = tf.concat(b, axis=1) # shape (batch_size, 10647, 4)
+    confidence = tf.concat(c, axis=1) # shape (batch_size, 10647, 1)
+    class_probs = tf.concat(t, axis=1) # shape (batch_size, 10647, classes)
 
     scores = confidence * class_probs
     boxes, scores, classes, valid_detections = tf.image.combined_non_max_suppression(
