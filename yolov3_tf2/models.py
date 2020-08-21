@@ -172,7 +172,7 @@ def yolo_boxes(pred, anchors, classes):
     return bbox, objectness, class_probs, pred_box
 
 
-def yolo_nms(outputs, anchors, masks, classes):
+def yolo_nms(outputs, anchors, masks, classes, max_boxes=40, iou_threshold=0.5, score_threshold=0.05):
     """ Non-maximum suppression of overlapping boxes."""
     # boxes, conf, type(class)
     b, c, t = [], [], []
@@ -181,7 +181,6 @@ def yolo_nms(outputs, anchors, masks, classes):
         b.append(tf.reshape(o[0], (tf.shape(o[0])[0], -1, tf.shape(o[0])[-1])))
         c.append(tf.reshape(o[1], (tf.shape(o[1])[0], -1, tf.shape(o[1])[-1])))
         t.append(tf.reshape(o[2], (tf.shape(o[2])[0], -1, tf.shape(o[2])[-1])))
-
 
     bbox = tf.concat(b, axis=1) # shape (batch_size, 10647, 4)
     confidence = tf.concat(c, axis=1) # shape (batch_size, 10647, 1)
@@ -193,16 +192,54 @@ def yolo_nms(outputs, anchors, masks, classes):
         scores=tf.reshape(
             scores, (tf.shape(scores)[0], -1, tf.shape(scores)[-1])),
         max_output_size_per_class=yolo_max_boxes,
-        max_total_size=yolo_max_boxes,
-        iou_threshold=yolo_iou_threshold,
-        score_threshold=yolo_score_threshold
+        max_total_size=max_boxes,
+        iou_threshold=iou_threshold,
+        score_threshold=score_threshold
     )
+    # input boxes coordinates need to be [y1, x1, y2, x2]
 
+    return boxes, scores, classes, valid_detections
+
+
+def convert_yolo_output(output_0, output_1, output_2, anchors, anchor_masks, num_classes, max_boxes=40,
+                        iou_threshold=0.5, score_threshold=0.05):
+    """
+    Converts output of yolo_output layers to boxes, scores and classes. In the first step,
+    the anchored predictions are converted to actual coordinates and then a non maximum
+    suppression is computed to filter out overlapping boxes.
+    @param output_0: shape (batch, 13, 13, 3, 5 + classes)
+    @param output_1: shape (batch, 26, 26, 3, 5 + classes)
+    @param output_2: shape (batch, 52, 52, 3, 5 + classes)
+    @param anchors: Anchor boxes
+    @param anchor_masks: assignment from anchors to output
+    @param num_classes: number of classes
+    @param max_boxes: the maximum number of boxes retained over all classes in nms.
+    @param iou_threshold: threshold for deciding whether boxes overlap too much with respect to IOU.
+    @param score_threshold:  threshold for deciding when to remove boxes based on score.
+    @return boxes: shape (batch_size, max_detections, 4). box coordinates [
+    @return scores: shape (batch_size, max_detections). objectness score for each box.
+    @return classes: shape (batch_size, max_detections) predicted class for each box.
+    @return valid_detections:  shape (batch_size). Only the top valid_detections[i] entries are valid
+    """
+
+    boxes_0 = yolo_boxes(output_0, anchors[anchor_masks[0]], num_classes)
+    boxes_1 = yolo_boxes(output_1, anchors[anchor_masks[1]], num_classes)
+    boxes_2 = yolo_boxes(output_2, anchors[anchor_masks[2]], num_classes)
+
+    boxes, scores, classes, valid_detections = yolo_nms((boxes_0[:3], boxes_1[:3], boxes_2[:3]),
+                                                        anchors, yolo_anchor_masks,
+                                                        num_classes, max_boxes, iou_threshold, score_threshold)
+
+    # boxes.shape (batch, max_detections, 4)
+    # scores.shape (batch, max_detections, 1)
+    # classes.shape (batch, max_detections, num_classes)
+    # valid_detections.shape: (batch) shape. Number of valid detections per batch item
     return boxes, scores, classes, valid_detections
 
 
 def YoloV3(size=None, channels=3, anchors=yolo_anchors,
            masks=yolo_anchor_masks, classes=80, training=False):
+
     x = inputs = Input([size, size, channels], name='input')
 
     x_36, x_61, x = Darknet(name='yolo_darknet')(x)
@@ -216,10 +253,10 @@ def YoloV3(size=None, channels=3, anchors=yolo_anchors,
     x = YoloConv(128, name='yolo_conv_2')((x, x_36))
     output_2 = YoloOutput(128, len(masks[2]), classes, name='yolo_output_2')(x)
 
-    if training:
-        return Model(inputs, (output_0, output_1, output_2), name='yolov3')
+    #if training:
+    return Model(inputs, (output_0, output_1, output_2), name='yolov3')
 
-    boxes_0 = Lambda(lambda x: yolo_boxes(x, anchors[masks[0]], classes),
+    """boxes_0 = Lambda(lambda x: yolo_boxes(x, anchors[masks[0]], classes),
                      name='yolo_boxes_0')(output_0)
     boxes_1 = Lambda(lambda x: yolo_boxes(x, anchors[masks[1]], classes),
                      name='yolo_boxes_1')(output_1)
@@ -229,7 +266,7 @@ def YoloV3(size=None, channels=3, anchors=yolo_anchors,
     outputs = Lambda(lambda x: yolo_nms(x, anchors, masks, classes),
                      name='yolo_nms')((boxes_0[:3], boxes_1[:3], boxes_2[:3]))
 
-    return Model(inputs, outputs, name='yolov3')
+    return Model(inputs, outputs, name='yolov3')"""
 
 
 def YoloV3Tiny(size=None, channels=3, anchors=yolo_tiny_anchors,
@@ -244,16 +281,16 @@ def YoloV3Tiny(size=None, channels=3, anchors=yolo_tiny_anchors,
     x = YoloConvTiny(128, name='yolo_conv_1')((x, x_8))
     output_1 = YoloOutput(128, len(masks[1]), classes, name='yolo_output_1')(x)
 
-    if training:
-        return Model(inputs, (output_0, output_1), name='yolov3')
+    #if training:
+    return Model(inputs, (output_0, output_1), name='yolov3')
 
-    boxes_0 = Lambda(lambda x: yolo_boxes(x, anchors[masks[0]], classes),
+    """boxes_0 = Lambda(lambda x: yolo_boxes(x, anchors[masks[0]], classes),
                      name='yolo_boxes_0')(output_0)
     boxes_1 = Lambda(lambda x: yolo_boxes(x, anchors[masks[1]], classes),
                      name='yolo_boxes_1')(output_1)
     outputs = Lambda(lambda x: yolo_nms(x, anchors, masks, classes),
                      name='yolo_nms')((boxes_0[:3], boxes_1[:3]))
-    return Model(inputs, outputs, name='yolov3_tiny')
+    return Model(inputs, outputs, name='yolov3_tiny')"""
 
 
 def YoloLoss(anchors, classes=80, ignore_thresh=0.5):
