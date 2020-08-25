@@ -100,8 +100,8 @@ IMAGE_FEATURE_MAP = {
 }
 
 
-def __parse_example(tfrecord, class_table, size, max_boxes):
-    x = tf.io.parse_single_example(tfrecord, IMAGE_FEATURE_MAP)
+def __parse_example(serialized_example, class_table, size, max_boxes):
+    x = tf.io.parse_single_example(serialized_example, IMAGE_FEATURE_MAP)
     x_train = tf.image.decode_jpeg(x['image/encoded'], channels=3)
     x_train = tf.image.resize(x_train, (size, size))
     filename = tf.cast(x['image/filename'],  tf.string)
