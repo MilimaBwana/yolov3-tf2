@@ -20,15 +20,15 @@ from tensorflow.keras.losses import (
 )
 from .utils import broadcast_iou
 
+"""
 yolo_max_boxes = 40 # must be > than max number of detection in one image
 yolo_iou_threshold = 0.5
 yolo_score_threshold = 0.05
-
-
+"""
 yolo_anchors = np.array([(10, 13), (16, 30), (33, 23), (30, 61), (62, 45),
                          (59, 119), (116, 90), (156, 198), (373, 326)],
                         np.float32) / 416
-#yolo_anchor_masks = np.array([[6, 7, 8], [3, 4, 5], [0, 1, 2]])
+yolo_anchor_masks = np.array([[6, 7, 8], [3, 4, 5], [0, 1, 2]])
 
 yolo_tiny_anchors = np.array([(10, 14), (23, 27), (37, 58),
                               (81, 82), (135, 169),  (344, 319)],
@@ -191,7 +191,7 @@ def yolo_nms(outputs, anchors, masks, classes, max_boxes=40, iou_threshold=0.5, 
         boxes=tf.reshape(bbox, (tf.shape(bbox)[0], -1, 1, 4)),
         scores=tf.reshape(
             scores, (tf.shape(scores)[0], -1, tf.shape(scores)[-1])),
-        max_output_size_per_class=yolo_max_boxes,
+        max_output_size_per_class=max_boxes,
         max_total_size=max_boxes,
         iou_threshold=iou_threshold,
         score_threshold=score_threshold
@@ -273,11 +273,13 @@ def YoloV3Tiny(size=None, channels=3, anchors=yolo_tiny_anchors,
     return Model(inputs, (output_0, output_1), name='yolov3')
 
 
-def YoloLoss(anchors, classes=80, ignore_thresh=0.5):
+def YoloLoss(anchors, classes=80, ignore_thresh=0.5, lambda_coord=5, lambda_noobj=0.5, lambda_obj=1):
     def yolo_loss(y_true, y_pred):
         #TODO: Hyperparameter lambdas
         # 1. transform all pred outputs
         # y_pred: (batch_size, grid, grid, anchors, (x, y, w, h, obj, ...cls))
+
+
         pred_box, pred_obj, pred_class, pred_xywh = yolo_boxes(
             y_pred, anchors, classes)
         pred_xy = pred_xywh[..., 0:2]
@@ -314,13 +316,13 @@ def YoloLoss(anchors, classes=80, ignore_thresh=0.5):
         ignore_mask = tf.cast(best_iou < ignore_thresh, tf.float32)
 
         # 5. calculate all losses
-        xy_loss = obj_mask * box_loss_scale * \
+        xy_loss = lambda_coord * obj_mask * box_loss_scale * \
             tf.reduce_sum(tf.square(true_xy - pred_xy), axis=-1)
-        wh_loss = obj_mask * box_loss_scale * \
+        wh_loss = lambda_coord * obj_mask * box_loss_scale * \
             tf.reduce_sum(tf.square(true_wh - pred_wh), axis=-1)
         obj_loss = binary_crossentropy(true_obj, pred_obj)
-        obj_loss = obj_mask * obj_loss + \
-            (1 - obj_mask) * ignore_mask * obj_loss
+        obj_loss = lambda_obj * obj_mask * obj_loss + \
+            lambda_noobj * (1 - obj_mask) * ignore_mask * obj_loss
         # TODO: use binary_crossentropy instead
         # obj_mask * binary_crossentropy(true_class_idx, pred_class)
         class_loss = obj_mask * sparse_categorical_crossentropy(
