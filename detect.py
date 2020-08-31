@@ -14,7 +14,7 @@ sys.path.append(file_path)
 from yolov3.yolov3_tf2.models import (
     YoloV3, YoloV3Tiny
 )
-from yolov3.yolov3_tf2.dataset import transform_images, load_tfrecord_dataset
+from yolov3.yolov3_tf2.dataset import __transform_images, load_tfrecord_dataset
 from yolov3.yolov3_tf2.utils import draw_outputs
 
 flags.DEFINE_string('classes', './data/coco.names', 'path to classes file')
@@ -54,7 +54,7 @@ def main(_argv):
             open(FLAGS.image, 'rb').read(), channels=3)
 
     img = tf.expand_dims(img_raw, 0)
-    img = transform_images(img, FLAGS.size)
+    img = __transform_images(img, FLAGS.size)
 
     t1 = time.time()
     boxes, scores, classes, nums = yolo(img)

@@ -7,7 +7,7 @@ import tensorflow as tf
 from yolov3.yolov3_tf2.models import (
     YoloV3, YoloV3Tiny
 )
-from yolov3.yolov3_tf2.dataset import load_tfrecord_dataset, transform_images
+from yolov3.yolov3_tf2.dataset import load_tfrecord_dataset, __transform_images
 from yolov3.yolov3_tf2.utils import draw_outputs
 
 flags.DEFINE_string('classes', './data/coco.names', 'path to classes file')
