@@ -10,20 +10,20 @@ def augment(img, y_train, params):
     augmentation_functions = {
         'flip_left_right': flip_left_right,
         'flip_up_down': flip_up_down,
-        # 'crop': __crop,
         'rotate': rotate,
-        'noise': noise}
+        'noise': noise,
+        'flip_left_right_bboxes': flip_left_right_bboxes,
+        'flip_up_down_bboxes': flip_up_down_bboxes}
 
-    #TODO: remove class label and add it later
+    # remove class label and concat it later
     boxes = y_train[:, :4]
     classes = y_train[:, 4:]
-    target_shape = params['img_size']
 
     for augmentation in augmentations:
         # Probability of augmenting is 0.25 """
         if augmentation in augmentation_functions.keys():
             f = augmentation_functions[augmentation]
-            if tf.random.uniform([], 0, 1) > 0.75:
+            if tf.random.uniform([], 0, 1) > 0:
                 img, boxes = f(img, boxes)
             #img, boxes = tf.cond(tf.math.greater(tf.random.uniform([], 0, 1), 0.75), lambda: f(img, boxes), lambda: img,boxes)
         else:
@@ -36,7 +36,7 @@ def augment(img, y_train, params):
 def noise(image, boxes):
     """ Adds random noise from a normal distribution.
     @param image: image to put noise onto.
-    @param boxes: bounding box coordintes (x1,y1, x2,y2)
+    @param boxes: 2-D Tensor of shape (box_number, 4) containing bounding boxes in format [xmin, ymin, xmax, ymax]
     @return: the noised image.
     """
     noise = tf.random.normal(shape=tf.shape(image), mean=15, stddev=1, dtype=tf.float32)
@@ -50,7 +50,7 @@ def flip_left_right(image, boxes):
     https://github.com/Ximilar-com/tf-image/blob/master/tf_image/core/bboxes/flip.py
     Flip an image and bounding boxes horizontally (left to right).
     @param image: 3-D Tensor of shape [height, width, channels]
-    @param boxes: 2-D Tensor of shape (box_number, 4) containing bounding boxes in format [ymin, xmin, ymin, xmax]
+    @param boxes: 2-D Tensor of shape (box_number, 4) containing bounding boxes in format [xmin, ymin, xmax, ymax]
     @return: image, bounding boxes
     """
     boxes = boxes * tf.constant([-1, 1, -1, 1], dtype=tf.float32) + tf.stack([1.0, 0.0, 1.0, 0.0])
@@ -64,9 +64,9 @@ def flip_up_down(image, boxes):
     """
     https://github.com/Ximilar-com/tf-image/blob/master/tf_image/core/bboxes/flip.py
     Flip an image and bounding boxes vertically (upside down).
-    :param image: 3-D Tensor of shape [height, width, channels]
-    :param boxes: 2-D Tensor of shape (box_number, 4) containing bounding boxes in format [ymin, xmin, ymin, xmax]
-    :return: image, bounding boxes
+    @param image: 3-D Tensor of shape [height, width, channels]
+    @param boxes: 2-D Tensor of shape (box_number, 4) containing bounding boxes in format [xmin, ymin, xmax, ymax]
+    @return: image, bounding boxes
     """
     boxes = boxes * tf.constant([1, -1, 1, -1], dtype=tf.float32) + tf.stack([0.0, 1.0, 0.0, 1.0])
     boxes = tf.stack([boxes[:, 0], boxes[:, 3], boxes[:, 2], boxes[:, 1]], axis=1)
@@ -78,6 +78,8 @@ def flip_up_down(image, boxes):
 def rotate(image, boxes):
     """
     Rotates the image and bounding boxes by a random degree.
+    @param image: 3-D Tensor of shape [height, width, channels]
+    @param boxes: 2-D Tensor of shape (box_number, 4) containing bounding boxes in format [xmin, ymin, xmax, ymax]
     """
     degree = tf.random.uniform([], -20, 20, tf.dtypes.float32)
     boxes = tf.map_fn(fn=lambda x: __rotate_single_bbox(tf.squeeze(x), tf.shape(image)[1], tf.shape(image)[0], degree),
@@ -85,6 +87,83 @@ def rotate(image, boxes):
     boxes = tf.stack(boxes)
     image = __rotate_img(image, tf.shape(image), -degree)
     return image, boxes
+
+
+def flip_left_right_bboxes(img, boxes):
+    """
+    Turns each bounding box left and right with a 50 percent probability of 50 percent each.
+    @param img: 3-D Tensor of shape [height, width, channels]
+    @param boxes: 2-D Tensor of shape (box_number, 4) containing bounding boxes in format [xmin, ymin, xmax, ymax]
+    """
+
+    for box in boxes:
+        if tf.random.uniform([], 0, 1) > 0.5:
+            # Every box has probability of 0.5 to get flipped
+            img = __flip_single_bbox(img, box, tf.image.flip_left_right)
+    return img, boxes
+
+
+def flip_up_down_bboxes(img, boxes):
+    """
+    Turns each bounding box up and down with a 50 percent probability of 50 percent each.
+    @param img: 3-D Tensor of shape [height, width, channels]
+    @param boxes: 2-D Tensor of shape (box_number, 4) containing bounding boxes in format [xmin, ymin, xmax, ymax]
+    """
+
+    for box in boxes:
+        if tf.random.uniform([], 0, 1) > 0.5:
+            # Every box has probability of 0.5 to get flipped
+            img = __flip_single_bbox(img, box, tf.image.flip_up_down)
+    return img, boxes
+
+
+def __flip_single_bbox(image, bbox, op):
+    """
+    Flips a bbox inside an image by the given op.
+    @param image: 3-D Tensor of shape [height, width, channels]
+    @param bbox: 1-D Tensor of shape (4, ) containing a bounding box in format [xmin, ymin, xmax, ymax]
+    @param op: tf.image.flip_up_down or tf.image.flip_left_right
+    Original code from:
+    https: // github.com / tensorflow / tpu / blob / c1a3ab6f7bb5d37a4cfff5ffc204d77a39e43668 / models / official / detection / utils / autoaugment_utils.py  # L505
+    """
+
+    image_height = tf.cast(tf.shape(image)[0], tf.float32)
+    image_width = tf.cast(tf.shape(image)[1], tf.float32)
+    min_x = tf.cast(image_height * bbox[0], tf.int32)
+    min_y = tf.cast(image_width * bbox[1], tf.int32)
+    max_x = tf.cast(image_height * bbox[2], tf.int32)
+    max_y = tf.cast(image_width * bbox[3], tf.int32)
+    image_height = tf.cast(image_height, tf.int32)
+    image_width = tf.cast(image_width, tf.int32)
+
+    # Clip to be sure the max values do not fall out of range.
+    max_y = tf.minimum(max_y, image_height - 1)
+    max_x = tf.minimum(max_x, image_width - 1)
+
+    # Get the sub-tensor that is the image within the bounding box region.
+    bbox_content = image[min_y:max_y + 1, min_x:max_x + 1, :]
+
+    # Apply the augmentation function to the bbox portion of the image.
+    augmented_bbox_content = op(bbox_content)
+
+    # Pad the augmented_bbox_content and the mask to match the shape of original
+    # image.
+    augmented_bbox_content = tf.pad(augmented_bbox_content,
+                                    [[min_y, (image_height - 1) - max_y],
+                                     [min_x, (image_width - 1) - max_x],
+                                     [0, 0]])
+
+    # Create a mask that will be used to zero out a part of the original image.
+    mask_tensor = tf.zeros_like(bbox_content)
+
+    mask_tensor = tf.pad(mask_tensor,
+                         [[min_y, (image_height - 1) - max_y],
+                          [min_x, (image_width - 1) - max_x],
+                          [0, 0]],
+                         constant_values=1)
+    # Replace the old bbox content with the new augmented content.
+    image = image * mask_tensor + augmented_bbox_content
+    return image
 
 
 def __rotate_img(img, input_shape, degree):
@@ -157,12 +236,13 @@ def __rotate_single_bbox(bbox, image_height, image_width, degrees):
     max_x = tf.cast(tf.reduce_max(new_coords[1, :]), tf.float32) / image_width + 0.5
 
     # Clip the bboxes to be sure the fall between [0, 1].
-    min_y, min_x, max_y, max_x = _clip_bbox(min_y, min_x, max_y, max_x)
-    min_y, min_x, max_y, max_x = _check_bbox_area(min_y, min_x, max_y, max_x)
+    min_y, min_x, max_y, max_x = __clip_bbox(min_y, min_x, max_y, max_x)
+    min_y, min_x, max_y, max_x = __check_bbox_area(min_y, min_x, max_y, max_x)
+
     return tf.stack([min_y, min_x, max_y, max_x])
 
 
-def _check_bbox_area(min_y, min_x, max_y, max_x, delta=0.05):
+def __check_bbox_area(min_y, min_x, max_y, max_x, delta=0.05):
     """Adjusts bbox coordinates to make sure the area is > 0.
     Args:
       min_y: Normalized bbox coordinate of type float between 0 and 1.
@@ -179,22 +259,22 @@ def _check_bbox_area(min_y, min_x, max_y, max_x, delta=0.05):
     height = max_y - min_y
     width = max_x - min_x
 
-    def _adjust_bbox_boundaries(min_coord, max_coord):
+    def __adjust_bbox_boundaries(min_coord, max_coord):
         # Make sure max is never 0 and min is never 1.
         max_coord = tf.maximum(max_coord, 0.0 + delta)
         min_coord = tf.minimum(min_coord, 1.0 - delta)
         return min_coord, max_coord
 
     min_y, max_y = tf.cond(tf.equal(height, 0.0),
-                           lambda: _adjust_bbox_boundaries(min_y, max_y),
+                           lambda: __adjust_bbox_boundaries(min_y, max_y),
                            lambda: (min_y, max_y))
     min_x, max_x = tf.cond(tf.equal(width, 0.0),
-                           lambda: _adjust_bbox_boundaries(min_x, max_x),
+                           lambda: __adjust_bbox_boundaries(min_x, max_x),
                            lambda: (min_x, max_x))
     return min_y, min_x, max_y, max_x
 
 
-def _clip_bbox(min_y, min_x, max_y, max_x):
+def __clip_bbox(min_y, min_x, max_y, max_x):
     """Clip bounding box coordinates between 0 and 1.
     Args:
       min_y: Normalized bbox coordinate of type float between 0 and 1.

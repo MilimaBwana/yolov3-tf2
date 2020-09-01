@@ -159,7 +159,7 @@ def parse_example(serialized_example, class_table, params, mode):
     @param serialized_example: one serialized example out of a tf record.
     @param class_table: tf.lookup.StaticHashTable with class text (key) and label (value)
     @param params: dictionary containing important hyperparameters. Must contain
-            'max_boxes', 'img_size', 'augmentation' as a key.
+            'max_detections', 'img_size', 'augmentation' as a key.
             If 'augmentation', the 'augmentation_techniques' key is also needed.
     @return a parsed (x_train, y_train)-tuple. x_train contains (img, filename)-tuple
     """
@@ -181,7 +181,7 @@ def parse_example(serialized_example, class_table, params, mode):
         img, y_train = augment(img, y_train, params)
 
     img = tf.image.resize(img, (params['img_size'], params['img_size']))
-    paddings = [[0, params['max_boxes'] - tf.shape(y_train)[0]], [0, 0]]
+    paddings = [[0, params['max_detections'] - tf.shape(y_train)[0]], [0, 0]]
     y_train = tf.pad(y_train, paddings)
 
     x_train = (img, filename)
