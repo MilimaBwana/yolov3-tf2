@@ -3,44 +3,39 @@ import math
 from .augmentation import augment
 
 
-def load_tf_record(mode, params, anchors, anchor_masks):
+def load_tf_record(tfrecord, mode, class_file, anchors, anchor_masks, batch_size=8, max_detections=100, size=416,
+                   augmentation=False):
     LINE_NUMBER = -1  # TODO: use tf.lookup.TextFileIndex.LINE_NUMBER
     class_table = tf.lookup.StaticHashTable(tf.lookup.TextFileInitializer(
-        params['dataset'].name_classes, tf.string, 0, tf.int64, LINE_NUMBER, delimiter="\n"), -1)
+        class_file, tf.string, 0, tf.int64, LINE_NUMBER, delimiter="\n"), -1)
+
+    dataset = tf.data.TFRecordDataset(tfrecord)
+    dataset = dataset.map(lambda x: parse_example(x, class_table, size, max_detections, mode, augmentation))
 
     if mode == tf.estimator.ModeKeys.TRAIN:
-        train_dataset = tf.data.TFRecordDataset(params['dataset'].tf_record_train)
-        # Tests
-        #for x in train_dataset:
-        #    parse_example(x, class_table, params, mode)
-        train_dataset = train_dataset.map(lambda x: parse_example(x, class_table, params, mode))
-        train_dataset = train_dataset.shuffle(buffer_size=512)
-        train_dataset = train_dataset.batch(params['batch_size'])
+        train_dataset = dataset.shuffle(buffer_size=512)
+        train_dataset = train_dataset.batch(batch_size)
         # Tests
         # for x, y in train_dataset:
         #    transform_images(x, params['img_size'])
         #    transform_targets(y, anchors, anchor_masks, params['img_size'])
         train_dataset = train_dataset.map(lambda x, y: (
-            __transform_images(x, params['img_size']),
-            __transform_targets(y, anchors, anchor_masks, params['img_size'])))
+            __transform_images(x, size),
+            __transform_targets(y, anchors, anchor_masks, size)))
         train_dataset = train_dataset.prefetch(
             buffer_size=tf.data.experimental.AUTOTUNE)
         return train_dataset
 
     elif mode == tf.estimator.ModeKeys.EVAL:
-        val_dataset = tf.data.TFRecordDataset(params['dataset'].tf_record_val)
-        val_dataset = val_dataset.map(lambda x: parse_example(x, class_table, params, mode))
-        val_dataset = val_dataset.batch(params['batch_size'])
+        val_dataset = dataset.batch(batch_size)
         val_dataset = val_dataset.map(lambda x, y: (
-            __transform_images(x, params['img_size']),
-            __transform_targets(y, anchors, anchor_masks, params['img_size']),
+            __transform_images(x, size),
+            __transform_targets(y, anchors, anchor_masks, size),
             y))
         return val_dataset
     elif mode == tf.estimator.ModeKeys.PREDICT:
-        test_dataset = tf.data.TFRecordDataset(params['dataset'].tf_record_test)
-        test_dataset = test_dataset.map(lambda x: parse_example(x, class_table, params, mode))
-        test_dataset = test_dataset.map(lambda x, y: (
-            __transform_images(x, params['img_size']), y))
+        test_dataset = dataset.map(lambda x, y: (
+            __transform_images(x, size), y))
         return test_dataset
     else:
         raise ValueError('No valid mode.')
@@ -154,7 +149,7 @@ IMAGE_FEATURE_MAP = {
 }
 
 
-def parse_example(serialized_example, class_table, params, mode):
+def parse_example(serialized_example, class_table, size, max_detections, mode, augmentation):
     """ Parses a image with bounding boxes, filename and class label.
     @param serialized_example: one serialized example out of a tf record.
     @param class_table: tf.lookup.StaticHashTable with class text (key) and label (value)
@@ -177,13 +172,29 @@ def parse_example(serialized_example, class_table, params, mode):
                         tf.sparse.to_dense(x['image/object/bbox/ymax']),
                         labels], axis=1)
 
-    if mode == tf.estimator.ModeKeys.TRAIN and params['augmentation']:
-        img, y_train = augment(img, y_train, params)
+    if mode == tf.estimator.ModeKeys.TRAIN and augmentation:
+        img, y_train = augment(img, y_train)
 
-    img = tf.image.resize(img, (params['img_size'], params['img_size']))
-    paddings = [[0, params['max_detections'] - tf.shape(y_train)[0]], [0, 0]]
+    img = tf.image.resize(img, (size, size))
+    paddings = [[0, max_detections - tf.shape(y_train)[0]], [0, 0]]
     y_train = tf.pad(y_train, paddings)
 
     x_train = (img, filename)
 
     return x_train, y_train
+
+
+def load_fake_dataset():
+    x_train = tf.image.decode_jpeg(
+        open('./data/girl.png', 'rb').read(), channels=3)
+    x_train = tf.expand_dims(x_train, axis=0)
+
+    labels = [
+        [0.18494931, 0.03049111, 0.9435849,  0.96302897, 0],
+        [0.01586703, 0.35938117, 0.17582396, 0.6069674, 56],
+        [0.09158827, 0.48252046, 0.26967454, 0.6403017, 67]
+    ] + [[0, 0, 0, 0, 0]] * 5
+    y_train = tf.convert_to_tensor(labels, tf.float32)
+    y_train = tf.expand_dims(y_train, axis=0)
+
+    return tf.data.Dataset.from_tensor_slices((x_train, y_train))

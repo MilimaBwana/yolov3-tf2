@@ -1,3 +1,5 @@
+from absl import flags
+from absl.flags import FLAGS
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import Model
@@ -20,11 +22,12 @@ from tensorflow.keras.losses import (
 )
 from .utils import broadcast_iou
 
-"""
-yolo_max_boxes = 40 # must be > than max number of detection in one image
-yolo_iou_threshold = 0.5
-yolo_score_threshold = 0.05
-"""
+
+flags.DEFINE_integer('yolo_max_boxes', 100,
+                     'maximum number of boxes per image')
+flags.DEFINE_float('yolo_iou_threshold', 0.5, 'iou threshold')
+flags.DEFINE_float('yolo_score_threshold', 0.05, 'score threshold')
+
 yolo_anchors = np.array([(10, 13), (16, 30), (33, 23), (30, 61), (62, 45),
                          (59, 119), (116, 90), (156, 198), (373, 326)],
                         np.float32) / 416
@@ -172,7 +175,7 @@ def yolo_boxes(pred, anchors, classes):
     return bbox, objectness, class_probs, pred_box
 
 
-def yolo_nms(outputs, anchors, masks, classes, max_boxes=40, iou_threshold=0.5, score_threshold=0.05):
+def yolo_nms(outputs, anchors, masks, classes, max_boxes, iou_threshold, score_threshold):
     """ Non-maximum suppression of overlapping boxes."""
     # boxes, conf, type(class)
     b, c, t = [], [], []
@@ -201,8 +204,8 @@ def yolo_nms(outputs, anchors, masks, classes, max_boxes=40, iou_threshold=0.5, 
     return boxes, scores, classes, valid_detections
 
 
-def convert_yolo_output(output_0, output_1, output_2, anchors, anchor_masks, num_classes, max_boxes=40,
-                        iou_threshold=0.5, score_threshold=0.05):
+def convert_yolo_output(output_0, output_1, output_2, anchors, anchor_masks, num_classes,
+                        max_boxes, iou_threshold, score_threshold):
     """
     Converts output of yolo_output layers to boxes, scores and classes. In the first step,
     the anchored predictions are converted to actual coordinates and then a non maximum
@@ -253,7 +256,7 @@ def YoloV3(size=None, channels=3, anchors=yolo_anchors,
     x = YoloConv(128, name='yolo_conv_2')((x, x_36))
     output_2 = YoloOutput(128, len(masks[2]), classes, name='yolo_output_2')(x)
 
-    #if training:
+
     return Model(inputs, (output_0, output_1, output_2), name='yolov3')
 
 
@@ -269,16 +272,13 @@ def YoloV3Tiny(size=None, channels=3, anchors=yolo_tiny_anchors,
     x = YoloConvTiny(128, name='yolo_conv_1')((x, x_8))
     output_1 = YoloOutput(128, len(masks[1]), classes, name='yolo_output_1')(x)
 
-    #if training:
     return Model(inputs, (output_0, output_1), name='yolov3')
 
 
 def YoloLoss(anchors, classes=80, ignore_thresh=0.5, lambda_coord=5, lambda_noobj=0.5, lambda_obj=1):
     def yolo_loss(y_true, y_pred):
-        #TODO: Hyperparameter lambdas
         # 1. transform all pred outputs
         # y_pred: (batch_size, grid, grid, anchors, (x, y, w, h, obj, ...cls))
-
 
         pred_box, pred_obj, pred_class, pred_xywh = yolo_boxes(
             y_pred, anchors, classes)

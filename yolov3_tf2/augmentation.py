@@ -4,30 +4,23 @@ import cv2 as cv
 import numpy as np
 
 
-def augment(img, y_train, params):
-    augmentations = params['augmentation_techniques']
-
-    augmentation_functions = {
-        'flip_left_right': flip_left_right,
-        'flip_up_down': flip_up_down,
-        'rotate': rotate,
-        'noise': noise,
-        'flip_left_right_bboxes': flip_left_right_bboxes,
-        'flip_up_down_bboxes': flip_up_down_bboxes}
+def augment(img, y_train):
+    augmentation_functions = [
+        flip_left_right,
+        flip_up_down,
+        rotate,
+        noise,
+        flip_left_right_bboxes, flip_up_down_bboxes]
 
     # remove class label and concat it later
     boxes = y_train[:, :4]
     classes = y_train[:, 4:]
 
-    for augmentation in augmentations:
+    for f in augmentation_functions:
         # Probability of augmenting is 0.25 """
-        if augmentation in augmentation_functions.keys():
-            f = augmentation_functions[augmentation]
-            if tf.random.uniform([], 0, 1) > 0:
-                img, boxes = f(img, boxes)
-            #img, boxes = tf.cond(tf.math.greater(tf.random.uniform([], 0, 1), 0.75), lambda: f(img, boxes), lambda: img,boxes)
-        else:
-            raise ValueError('No valid augmentation: ', augmentation)
+        if tf.random.uniform([], 0, 1) > 0:
+            img, boxes = f(img, boxes)
+            # img, boxes = tf.cond(tf.math.greater(tf.random.uniform([], 0, 1), 0.75), lambda: f(img, boxes), lambda: img,boxes)
 
     y_train = tf.concat([boxes, classes], axis=-1)
     return img, y_train

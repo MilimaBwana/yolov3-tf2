@@ -2,6 +2,8 @@ from absl import logging
 import numpy as np
 import tensorflow as tf
 import cv2
+import os
+import shutil
 
 YOLOV3_LAYER_LIST = [
     'yolo_darknet',
@@ -99,33 +101,70 @@ def broadcast_iou(box_1, box_2):
     return int_area / (box_1_area + box_2_area - int_area)
 
 
-def draw_outputs(img, outputs, class_names):
-    boxes, objectness, classes, nums = outputs
-    boxes, objectness, classes, nums = boxes[0], objectness[0], classes[0], nums[0]
-    wh = np.flip(img.shape[0:2])
-    for i in range(nums):
-        x1y1 = tuple((np.array(boxes[i][0:2]) * wh).astype(np.int32))
-        x2y2 = tuple((np.array(boxes[i][2:4]) * wh).astype(np.int32))
-        img = cv2.rectangle(img, x1y1, x2y2, (255, 0, 0), 2)
-        img = cv2.putText(img, '{} {:.4f}'.format(
-            class_names[int(classes[i])], objectness[i]),
-            x1y1, cv2.FONT_HERSHEY_COMPLEX_SMALL, 1, (0, 0, 255), 2)
-    return img
+def create_annotations(all_annotations, int_labels, num_classes):
+    """
+    Adds annotations from int_labels to all_annotations.
+    All_annotations is a list of annotations per class over all images.
+    @param all_annotations: list to append to. shape (num_images, num_classes, x), where x is the detections in the image
+        assigned to this class.
+    @param int_labels: list of groundtruth int labels. shape (batch_size, max_detections, 5)
+    @param num_classes: number of classes and thus length of each list per image
+    """
+
+    # Split among batch dimension
+    label_list = tf.split(int_labels, tf.shape(int_labels)[0].numpy(), axis=0)
+
+    for label in label_list:
+        # Filter padding. Padding was applied if width and height of bounding box = 0
+        non_padded_labels = tf.gather_nd(label, tf.where(
+            tf.math.logical_and(tf.not_equal(label[:, :, 2], 0), tf.not_equal(label[:, :, 3], 0))))
+        label_boxes = tf.concat(tf.split(non_padded_labels, 5, axis=-1)[:4], axis=-1)
+        label_classes = tf.squeeze(tf.split(non_padded_labels, 5, axis=-1)[-1:])
+
+        tmp = [None for i in range(num_classes)]
+
+        for c in range(num_classes):
+            tmp[c] = tf.gather_nd(label_boxes, tf.where(tf.keras.backend.flatten(label_classes) == c)).numpy()
+
+        all_annotations.append(tmp)
+
+    return all_annotations
 
 
-def draw_labels(x, y, class_names):
-    img = x.numpy()
-    boxes, classes = tf.split(y, (4, 1), axis=-1)
-    classes = classes[..., 0]
-    wh = np.flip(img.shape[0:2])
-    for i in range(len(boxes)):
-        x1y1 = tuple((np.array(boxes[i][0:2]) * wh).astype(np.int32))
-        x2y2 = tuple((np.array(boxes[i][2:4]) * wh).astype(np.int32))
-        img = cv2.rectangle(img, x1y1, x2y2, (255, 0, 0), 2)
-        img = cv2.putText(img, class_names[classes[i]],
-                          x1y1, cv2.FONT_HERSHEY_COMPLEX_SMALL,
-                          1, (0, 0, 255), 2)
-    return img
+def create_detections(all_detections, boxes, scores, classes, valid_detections, num_classes):
+    """
+    Adds detections, given from boxes, scores and classes,  to all_detections.
+    All_detections is a list of detections per class over all images.
+    @param all_detections: list to append to. shape (num_images, num_classes, x), where x is the detections in the image
+        assigned to this class
+    @param boxes: list of groundtruth int labels. shape (batch_size, max_detections, 4)
+    @param scores: score for the corresponding list. shape (batch_size, max_detections, 1)
+    @param classes: assigned class for the corresponding list. shape (batch_size, max_detections, 1)
+    @param valid_detections: number of valid detections for each image. shape (batch_size,)
+    @param num_classes: number of classes and thus length of each list per image
+    """
+    boxes_list = tf.split(boxes, tf.shape(boxes)[0].numpy(), axis=0)
+    scores_list = tf.split(scores, tf.shape(scores)[0].numpy(), axis=0)
+    classes_list = tf.split(classes, tf.shape(classes)[0].numpy(), axis=0)
+
+    for i in range(len(boxes_list)):
+        # remove first dimension and non-valid detections
+        boxes = tf.reshape(boxes_list[i], tf.shape(boxes_list[i])[1:])[:valid_detections[i]]
+        scores = tf.reshape(scores_list[i],
+                            tf.shape(scores_list[i])[1:])[:valid_detections[i]]  # Scores are already sorted in descending order
+        classes = tf.reshape(classes_list[i], tf.shape(classes_list[i])[1:])[:valid_detections[i]]
+
+        tmp = [None for i in range(num_classes)]
+
+        c: int
+        for c in range(num_classes):
+            # List of predicted boxes with corresponding score
+            tmp[c] = [tf.gather_nd(boxes, tf.where(classes == c)).numpy(),
+                      tf.gather_nd(scores, tf.where(classes == c)).numpy()]
+
+        all_detections.append(tmp)
+
+    return all_detections
 
 
 def freeze_all(model, frozen=True):
@@ -133,3 +172,18 @@ def freeze_all(model, frozen=True):
     if isinstance(model, tf.keras.Model):
         for l in model.layers:
             freeze_all(l, frozen)
+
+
+def clear_directory(folder, clear_subdirectories=False):
+    """ Deletes every file in the given folder.
+    If clear_subdirectories, subdirectories and their files are deleted, too."""
+    if os.path.exists(folder):
+        for the_file in os.listdir(folder):
+            file_path = os.path.join(folder, the_file)
+            try:
+                if os.path.isfile(file_path):
+                    os.unlink(file_path)
+                elif os.path.isdir(file_path) and clear_subdirectories:
+                    shutil.rmtree(file_path)
+            except Exception as e:
+                print(e)

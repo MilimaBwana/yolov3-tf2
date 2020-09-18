@@ -3,25 +3,16 @@ from absl.flags import FLAGS
 
 import tensorflow as tf
 import numpy as np
-import os, sys
-from tensorflow.keras.callbacks import (
-    ReduceLROnPlateau,
-    EarlyStopping,
-    ModelCheckpoint,
-    TensorBoard
-)
-
-""" Syspath needs to include parent directory "pollen detection"  to find sibling 
-modules and database."""
-file_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__))) + "/"
-sys.path.append(file_path)
-from yolov3.yolov3_tf2.models import (
+from yolov3_tf2.models import (
     YoloV3, YoloV3Tiny, YoloLoss,
     yolo_anchors, yolo_anchor_masks,
-    yolo_tiny_anchors, yolo_tiny_anchor_masks
+    yolo_tiny_anchors, yolo_tiny_anchor_masks,
+    convert_yolo_output
 )
-from yolov3.yolov3_tf2.utils import freeze_all
-import yolov3.yolov3_tf2.dataset as dataset
+from yolov3_tf2.utils import freeze_all, create_detections, create_annotations, clear_directory
+from yolov3_tf2.metrics import average_precisions, calculate_map
+import yolov3_tf2.dataset as dataset
+from yolov3_tf2.checkpoint_handler import BestEpochCheckpoint
 
 flags.DEFINE_string('dataset', '', 'path to dataset')
 flags.DEFINE_string('val_dataset', '', 'path to validation dataset')
@@ -29,10 +20,6 @@ flags.DEFINE_boolean('tiny', False, 'yolov3 or yolov3-tiny')
 flags.DEFINE_string('weights', './checkpoints/yolov3.tf',
                     'path to weights file')
 flags.DEFINE_string('classes', './data/coco.names', 'path to classes file')
-flags.DEFINE_enum('mode', 'fit', ['fit', 'eager_fit', 'eager_tf'],
-                  'fit: model.fit, '
-                  'eager_fit: model.fit(run_eagerly=True), '
-                  'eager_tf: custom GradientTape')
 flags.DEFINE_enum('transfer', 'none',
                   ['none', 'darknet', 'no_output', 'frozen', 'fine_tune'],
                   'none: Training from scratch, '
@@ -44,9 +31,10 @@ flags.DEFINE_integer('size', 416, 'image size')
 flags.DEFINE_integer('epochs', 2, 'number of epochs')
 flags.DEFINE_integer('batch_size', 8, 'batch size')
 flags.DEFINE_float('learning_rate', 1e-3, 'learning rate')
+flags.DEFINE_boolean('augmentation', False, 'Enable image augmentation during training')
 flags.DEFINE_integer('num_classes', 80, 'number of classes in the model')
 flags.DEFINE_integer('weights_num_classes', None, 'specify num class for `weights` file if different, '
-                     'useful in transfer learning with different number of classes')
+                                                  'useful in transfer learning with different number of classes')
 
 
 def main(_argv):
@@ -64,26 +52,21 @@ def main(_argv):
         anchors = yolo_anchors
         anchor_masks = yolo_anchor_masks
 
-    #train_dataset = dataset.load_fake_dataset()
+    train_dataset = dataset.load_fake_dataset()
     if FLAGS.dataset:
-        train_dataset = dataset.load_tfrecord_dataset(
-            FLAGS.dataset, FLAGS.classes, FLAGS.size)
-    train_dataset = train_dataset.shuffle(buffer_size=512)
-    train_dataset = train_dataset.batch(FLAGS.batch_size)
-    train_dataset = train_dataset.map(lambda x, y: (
-        dataset.__transform_images(x, FLAGS.size),
-        dataset.__transform_targets(y, anchors, anchor_masks, FLAGS.size)))
-    train_dataset = train_dataset.prefetch(
-        buffer_size=tf.data.experimental.AUTOTUNE)
+        train_dataset = dataset.load_tf_record(tfrecord=FLAGS.dataset, mode=tf.estimator.ModeKeys.TRAIN,
+                                               class_file=FLAGS.classes, anchors=anchors,
+                                               anchor_masks=anchor_masks, batch_size=FLAGS.batch_size,
+                                               max_detections=FLAGS.yolo_max_boxes, size=FLAGS.size,
+                                               augmentation=FLAGS.augmentation)
 
-    #val_dataset = dataset.load_fake_dataset()
+    val_dataset = dataset.load_fake_dataset()
     if FLAGS.val_dataset:
-        val_dataset = dataset.load_tfrecord_dataset(
-            FLAGS.val_dataset, FLAGS.classes, FLAGS.size)
-    val_dataset = val_dataset.batch(FLAGS.batch_size)
-    val_dataset = val_dataset.map(lambda x, y: (
-        dataset.__transform_images(x, FLAGS.size),
-        dataset.__transform_targets(y, anchors, anchor_masks, FLAGS.size)))
+        val_dataset = dataset.load_tf_record(tfrecord=FLAGS.val_dataset, mode=tf.estimator.ModeKeys.EVAL,
+                                             class_file=FLAGS.classes, anchors=anchors,
+                                             anchor_masks=anchor_masks, batch_size=FLAGS.batch_size,
+                                             max_detections=FLAGS.yolo_max_boxes, size=FLAGS.size,
+                                             augmentation=False)
 
     # Configure the model for transfer learning
     if FLAGS.transfer == 'none':
@@ -128,69 +111,96 @@ def main(_argv):
     loss = [YoloLoss(anchors[mask], classes=FLAGS.num_classes)
             for mask in anchor_masks]
 
-    if FLAGS.mode == 'eager_tf':
-        # Eager mode is great for debugging
-        # Non eager graph mode is recommended for real training
-        avg_loss = tf.keras.metrics.Mean('loss', dtype=tf.float32)
-        avg_val_loss = tf.keras.metrics.Mean('val_loss', dtype=tf.float32)
+    train_log_dir = './logs/train'
+    val_log_dir = './logs/valid'
+    clear_directory(train_log_dir, clear_subdirectories=True)
+    clear_directory(val_log_dir, clear_subdirectories=True)
+    train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+    val_summary_writer = tf.summary.create_file_writer(val_log_dir)
 
-        for epoch in range(1, FLAGS.epochs + 1):
-            for batch, (images, labels) in enumerate(train_dataset):
-                with tf.GradientTape() as tape:
-                    outputs = model(images, training=True)
-                    regularization_loss = tf.reduce_sum(model.losses)
-                    pred_loss = []
-                    for output, label, loss_fn in zip(outputs, labels, loss):
-                        pred_loss.append(loss_fn(label, output))
-                    total_loss = tf.reduce_sum(pred_loss) + regularization_loss
+    # Define checkpoint handler: track macro mAP
+    ckpt_handler = BestEpochCheckpoint(model, './checkpoints/', 10,
+                                                          min_delta=0.005, mode='max')
 
-                grads = tape.gradient(total_loss, model.trainable_variables)
-                optimizer.apply_gradients(
-                    zip(grads, model.trainable_variables))
+    # Eager mode is great for debugging
+    # Non eager graph mode is recommended for real training
+    avg_loss = tf.keras.metrics.Mean('loss', dtype=tf.float32)
+    avg_val_loss = tf.keras.metrics.Mean('val_loss', dtype=tf.float32)
 
-                logging.info("{}_train_{}, {}, {}".format(
-                    epoch, batch, total_loss.numpy(),
-                    list(map(lambda x: np.sum(x.numpy()), pred_loss))))
-                avg_loss.update_state(total_loss)
-
-            for batch, (images, labels) in enumerate(val_dataset):
-                outputs = model(images)
+    # Training
+    for epoch in range(1, FLAGS.epochs + 1):
+        for batch, (images, labels) in enumerate(train_dataset):
+            images, filenames = images
+            with tf.GradientTape() as tape:
+                outputs = model(images, training=True)
                 regularization_loss = tf.reduce_sum(model.losses)
                 pred_loss = []
                 for output, label, loss_fn in zip(outputs, labels, loss):
                     pred_loss.append(loss_fn(label, output))
                 total_loss = tf.reduce_sum(pred_loss) + regularization_loss
 
-                logging.info("{}_val_{}, {}, {}".format(
-                    epoch, batch, total_loss.numpy(),
-                    list(map(lambda x: np.sum(x.numpy()), pred_loss))))
-                avg_val_loss.update_state(total_loss)
+            grads = tape.gradient(total_loss, model.trainable_variables)
+            optimizer.apply_gradients(
+                zip(grads, model.trainable_variables))
 
-            logging.info("{}, train: {}, val: {}".format(
-                epoch,
-                avg_loss.result().numpy(),
-                avg_val_loss.result().numpy()))
+            logging.info("{}_train_{}, {}, {}".format(
+                epoch, batch, total_loss.numpy(),
+                list(map(lambda x: np.sum(x.numpy()), pred_loss))))
+            avg_loss.update_state(total_loss)
 
-            avg_loss.reset_states()
-            avg_val_loss.reset_states()
-            model.save_weights(
-                'checkpoints/yolov3_train_{}.tf'.format(epoch))
-    else:
-        model.compile(optimizer=optimizer, loss=loss,
-                      run_eagerly=(FLAGS.mode == 'eager_fit'))
+        with train_summary_writer.as_default():
+            tf.summary.scalar('Avg_loss', avg_loss.result(), step=epoch)
 
-        callbacks = [
-            ReduceLROnPlateau(verbose=1),
-            EarlyStopping(patience=3, verbose=1),
-            ModelCheckpoint('checkpoints/yolov3_train_{epoch}.tf',
-                            verbose=1, save_weights_only=True),
-            TensorBoard(log_dir='logs')
-        ]
+        all_annotations = []
+        all_detections = []
 
-        history = model.fit(train_dataset,
-                            epochs=FLAGS.epochs,
-                            callbacks=callbacks,
-                            validation_data=val_dataset)
+        for batch, (images, labels, int_labels) in enumerate(val_dataset):
+            images, filenames = images
+            outputs = model(images)
+            boxes, scores, classes, valid_detections = convert_yolo_output(outputs[0], outputs[1], outputs[2],
+                                                                           anchors=anchors,
+                                                                           anchor_masks=anchor_masks,
+                                                                           num_classes=FLAGS.num_classes,
+                                                                           max_boxes=FLAGS.yolo_max_boxes,
+                                                                           iou_threshold=FLAGS.yolo_iou_threshold,
+                                                                           score_threshold=FLAGS.yolo_score_threshold
+                                                                           )
+            all_annotations = create_annotations(all_annotations, int_labels, FLAGS.num_classes)
+            all_detections = create_detections(all_detections, boxes, scores, classes, valid_detections,
+                                               FLAGS.num_classes)
+            regularization_loss = tf.reduce_sum(model.losses)
+            pred_loss = []
+            for output, label, loss_fn in zip(outputs, labels, loss):
+                pred_loss.append(loss_fn(label, output))
+            total_loss = tf.reduce_sum(pred_loss) + regularization_loss
+
+            logging.info("{}_val_{}, {}, {}".format(
+                epoch, batch, total_loss.numpy(),
+                list(map(lambda x: np.sum(x.numpy()), pred_loss))))
+            avg_val_loss.update_state(total_loss)
+
+        ap_val = average_precisions(all_detections, all_annotations, FLAGS.num_classes,
+                                    FLAGS.yolo_iou_threshold)
+
+        micro_map, macro_map = calculate_map(ap_val)
+        logging.info("{}, train: {}, val: {}, micro_map: {}, macro_map:{}".format(
+            epoch,
+            avg_loss.result().numpy(),
+            avg_val_loss.result().numpy(),
+            micro_map,
+            macro_map))
+        print('micro_map: ', micro_map)
+        print('macro_map: ', micro_map)
+
+        with val_summary_writer.as_default():
+            tf.summary.scalar('Avg_loss', avg_val_loss.result(), step=epoch)
+            tf.summary.scalar('Micro_mAP', micro_map, step=epoch)
+            tf.summary.scalar('Macro_mAP', macro_map, step=epoch)
+
+        ckpt_handler.on_epoch_end(epoch=epoch, current_monitor=macro_map)
+
+        avg_loss.reset_states()
+        avg_val_loss.reset_states()
 
 
 if __name__ == '__main__':

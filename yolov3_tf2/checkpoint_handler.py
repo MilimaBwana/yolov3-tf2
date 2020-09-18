@@ -1,0 +1,56 @@
+import numpy as np
+import tensorflow as tf
+
+
+class BestEpochCheckpoint:
+    """ Saves only the checkpoints for the epoch with the best monitored quantity.
+
+    Arguments:
+        model: model that is being trained
+        directory: the path to a directory in which to write checkpoints
+        max_to_keep: the number of checkpoints to keep.
+        min_delta: Minimum change in the monitored quantity to be qualified as
+            an improvement.
+        mode: One out of {"min", "max"}. Describes if the monitored quantity should be increasing ('max') or decreasing ('min') to
+          be qualified as an improvement.
+    """
+
+    def __init__(self, model, directory, max_to_keep, min_delta=0.01, mode='max'):
+
+        self.model = model
+        self.directory = directory
+        self.min_delta = min_delta
+        self.mode = mode
+        self.wait = 0
+
+        self.ckpt = tf.train.Checkpoint(step=tf.Variable(1), net=self.model)
+        self.manager = tf.train.CheckpointManager(self.ckpt, self.directory, max_to_keep=max_to_keep)
+
+        if mode not in ['min', 'max']:
+            raise ValueError('Monitoring mode must be min or max.')
+
+        if mode == 'min':
+            self.monitor_op = tf.math.less
+            self.min_delta *= -1
+            self.best = np.Inf
+        else:
+            self.monitor_op = tf.math.greater
+            self.best = -np.Inf
+
+    def on_epoch_end(self, current_monitor, epoch):
+        """ Called at the end of each epoch. Checks if monitored quantity in current epoch is better than in the best
+        epoch. If so, a new checkpoint is saved.
+        @param current_monitor: current value of the monitored quantity.
+        @param epoch: current epoch.
+        @return Nothing."""
+
+        if self.monitor_op(current_monitor - self.min_delta, self.best):
+            """ Current epoch better. """
+            self.best = current_monitor
+            self.wait = 0
+            save_path = self.manager.save(checkpoint_number=epoch)
+            print("Saved checkpoint for epoch {}: {}".format(epoch, save_path))
+
+        else:
+            """ Current epoch worse. """
+            self.wait += 1
